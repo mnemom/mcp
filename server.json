@@ -3,8 +3,12 @@
   "name": "io.github.mnemom/mnemom",
   "title": "Mnemom — Trust Ratings for AI Agents",
   "description": "Trust infrastructure for AI agents: read a verifiable Trust Rating, claim an identity, earn a badge.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "websiteUrl": "https://www.mnemom.ai",
+  "repository": {
+    "url": "https://github.com/mnemom/mcp",
+    "source": "github"
+  },
   "remotes": [
     {
       "type": "streamable-http",
