@@ -12,7 +12,7 @@
   "icons": [
     {
       "src": "https://www.mnemom.ai/mnemom_favicon.png",
-      "sizes": "266x264",
+      "sizes": ["266x264"],
       "mimeType": "image/png"
     }
   ],
