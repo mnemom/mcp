@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.mnemom/isittrustready",
   "title": "Is It Trust Ready — agent-trust-readiness scanner",
-  "description": "Scan any website or MCP server for agent-trust-readiness; returns a signed scorecard you can verify in-band.",
+  "description": "Scan any website or MCP server for agent-trust-readiness; returns a signed, verifiable scorecard.",
   "version": "1.0.0",
   "websiteUrl": "https://www.isittrustready.ai",
   "repository": {
