@@ -17,7 +17,7 @@ repo is its metadata + documentation home.
 
 ## Connect
 
-Streamable‑HTTP MCP endpoint (curated directory profile, 15 tools):
+Streamable‑HTTP MCP endpoint (curated directory profile, 16 tools):
 
 ```
 https://api.mnemom.ai/mcp?profile=directory
@@ -45,13 +45,16 @@ card) require authentication.
 
 ## What's in the directory profile
 
-A curated 15‑tool surface, grouped:
+A curated 16‑tool surface, grouped:
 
-- **Reputation** — `get_reputation`, `get_reputation_badge`, `get_risk_history`,
+- **Reputation** — `get_reputation`, `get_reputation_badge`,
   `search_reputation_directory`, `verify_reputation`, `list_agents`, `get_agent`
+  (agent risk history is authenticated — see `get_risk_history` on the full surface)
 - **Website trust scanning** — `scan_trust`, `verify_scan`
-- **Identity & declarations** — `claim_agent`, `preview_compose_alignment_by_agent`,
-  `put_alignment_by_agent`, `report_recipe_fn_fp`
+- **Identity & protection** — `claim_agent`, `verify_agent_binding`,
+  `preview_compose_alignment_by_agent`, `put_alignment_by_agent`,
+  `preview_compose_protection_by_agent`, `put_protection_by_agent`,
+  `report_recipe_fn_fp`
 - **Orientation** — `get_started`
 
 The default endpoint (`/mcp`, no profile) exposes the full power‑user tool
