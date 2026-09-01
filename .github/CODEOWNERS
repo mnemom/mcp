@@ -1,0 +1,5 @@
+# mnemom/mcp is the canonical repo the OpenAI / MCP-directory submission verifies
+# against. It is frozen while that submission is under review (see MNE-6778). Any
+# change auto-requests review from the repo admins. This is advisory unless branch
+# protection is enabled to require CODEOWNERS review (admin-only).
+* @alexgarden-mnemom @wassimwehbi-mnemom
