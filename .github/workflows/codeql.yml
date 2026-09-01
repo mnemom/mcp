@@ -1,0 +1,30 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 8 * * 1'
+
+permissions:
+  actions: read
+  security-events: write
+  contents: read
+
+jobs:
+  codeql:
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    # House pattern (mirrors mnemom/deploy): call the org-central reusable
+    # CodeQL workflow. This repo holds only JSON/Markdown manifests (no
+    # application code — GitHub's languages API is empty), so the only
+    # analyzable surface is GitHub Actions workflows themselves. Bump this
+    # `languages` input (e.g. add javascript-typescript, python) if real code
+    # is ever added to the repo.
+    uses: mnemom/.github/.github/workflows/security-scan.yml@main
+    with:
+      languages: "actions"
