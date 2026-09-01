@@ -1,0 +1,59 @@
+name: Freeze guard (OpenAI submission)
+
+# WHY: mnemom/mcp is the canonical source-of-truth repo the OpenAI / MCP-directory
+# review verifies against (server.json -> repository.url). While that submission is
+# under review this repo must not change. This check goes RED on any push or PR that
+# touches submission-critical files, so a change is loud and visible instead of silent
+# and is routed to Shraddha (@shraddha-mnemom, sole sign-off — see CODEOWNERS).
+# It is a guardrail, not a hard lock — enforcing a true lock needs repo-admin branch
+# protection (see MNE-6778). Lift by deleting this workflow once the submission is
+# accepted and stable.
+
+on:
+  pull_request:
+  push:
+    branches: ["**"]
+
+jobs:
+  freeze-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail if submission-critical files changed
+        run: |
+          # Files that define the submission the reviewer verifies against.
+          CRITICAL='server.json glama.json README.md'
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.sha }}"
+          fi
+
+          # New branch / no valid base -> compare against empty tree.
+          if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            BASE=$(git hash-object -t tree /dev/null)
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+          echo "Changed files:"; echo "$CHANGED"
+
+          HIT=""
+          for f in $CRITICAL; do
+            if echo "$CHANGED" | grep -qx "$f"; then HIT="$HIT $f"; fi
+          done
+
+          if [ -n "$HIT" ]; then
+            echo "::error::mnemom/mcp is FROZEN for the OpenAI/MCP-directory submission."
+            echo "::error::These submission-critical files must not change while it is under review:$HIT"
+            echo "::error::Changes here need sign-off from Shraddha (@shraddha-mnemom) only — see CODEOWNERS."
+            echo "::error::If the submission is accepted/stable, remove .github/workflows/freeze-guard.yml (see MNE-6778)."
+            exit 1
+          fi
+
+          echo "No submission-critical files changed — OK."

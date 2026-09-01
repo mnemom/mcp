@@ -1,0 +1,6 @@
+# mnemom/mcp is the canonical repo the OpenAI / MCP-directory submission verifies
+# against. It is frozen while that submission is under review (see MNE-6778). Any
+# change to this repo auto-requests review from Shraddha (@shraddha-mnemom) and no
+# one else — she is the sole sign-off. This is advisory unless branch protection is
+# enabled to require CODEOWNERS review (admin-only).
+* @shraddha-mnemom
