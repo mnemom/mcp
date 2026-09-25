@@ -17,6 +17,9 @@ on:
 jobs:
   freeze-guard:
     runs-on: ubuntu-latest
+    # Read-only: checks out history and diffs it locally; no API writes.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
