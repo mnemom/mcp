@@ -81,7 +81,10 @@ then production, and check those clients.
      and then stops at the freeze, so the next run starts. Wait until the
      preview ring serves the commit with all three: the `X-Mnemom-Deploy-Ref`
      header of `curl -sSI https://api-us1.mnemom.ai/health` must equal
-     mnemom-api `main`'s head.
+     mnemom-api `main`'s head. If a run stops at "Approve: Production"
+     (it can when the deploy workflow cannot confirm the change is
+     migration-free), reject it. The freeze still refuses production and the
+     next queued run starts.
    - **Test the preview ring.** Pull `/Users/shraddha/mnemom/mcp` so the
      local probe is this version, then run:
      ```
@@ -93,20 +96,29 @@ then production, and check those clients.
    - **If anything fails**, leave the freeze on and forward-fix or revert on
      mnemom-api `main`, then repeat from the deploy-ref check. Production
      never saw the change.
-   - **Ship.** Check `main`'s head is still the commit you tested (no other
-     merge since). Clear `AZURE_PROD_CELL_HOLD`, then redeploy that commit:
+   - **Ship.** Note the tested commit: the full 40-character sha that
+     `X-Mnemom-Deploy-Ref` showed on the preview ring. Clear
+     `AZURE_PROD_CELL_HOLD`, then send one deploy of exactly that commit:
      ```
-     gh workflow run deploy.yml --repo mnemom/deploy -f repos=mnemom-api -f environment=production
+     gh api repos/mnemom/deploy/dispatches -f event_type=deploy \
+       -f 'client_payload[repo]=mnemom-api' \
+       -f 'client_payload[environment]=production' \
+       -f 'client_payload[sha]=<tested 40-character sha>'
      ```
-     Watch the run until the us-2 api job succeeds, and confirm the
-     `X-Mnemom-Deploy-Ref` of `https://api.mnemom.ai/health` equals the tested
-     commit.
+     Use this, not `gh workflow run deploy.yml`: a manual run carries no
+     commit, so the production cell gate refuses it (G6) and nothing ships.
+     The production cell image is pinned to the sha in the payload, so a merge
+     after testing cannot slip in. The run redeploys the preview ring first
+     with the same image, which is harmless. Watch it until the us-2 api job
+     succeeds, and confirm the `X-Mnemom-Deploy-Ref` of
+     `https://api.mnemom.ai/health` equals the tested commit.
    - **Roll back** if production misbehaves. Production rollback needs
      Shraddha's explicit go:
      ```
      gh workflow run rollback.yml --repo mnemom/deploy -f service=azure-api -f environment=production -f cell=us-2
      ```
-     This rolls back the container only; none of 3460, 3457 or 3459
+     This rolls back the api container only (the scheduler keeps the new
+     image, harmless for these PRs); none of 3460, 3457 or 3459
      carries a database migration (checked 2026-09-30).
 
    Get an owner decision on cause 6.
