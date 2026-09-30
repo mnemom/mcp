@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# probe-oauth-flow.sh — live OAuth/DCR probe against REAL production
-# (https://api.mnemom.ai). No mocks, no localhost, no pre-provisioned
+# probe-oauth-flow.sh — live OAuth/DCR probe against a REAL deployed ring
+# (production https://api.mnemom.ai by default). No mocks, no local server, no pre-provisioned
 # credentials. It reproduces what the OpenAI MCP directory reviewer's client
 # does against the MCP server URL entered in the submission form: probe a tool
 # unauthenticated, follow the challenge to the resource metadata, discover the
@@ -12,6 +12,8 @@
 # Usage:
 #   ./scripts/probe-oauth-flow.sh                     # probes https://api.mnemom.ai/mcp/directory
 #   MCP_URL=https://api.mnemom.ai/mcp ./scripts/probe-oauth-flow.sh
+#   API=https://api-us1.mnemom.ai MCP_URL=https://api-us1.mnemom.ai/mcp ./scripts/probe-oauth-flow.sh
+#                                                     # the preview ring, before prod
 #
 # MCP_URL must be the exact MCP server URL entered in the form (the `mcp_url`
 # in mnemom-api's regenerated submissions/openai/chatgpt-app-submission.json).
@@ -25,15 +27,25 @@
 
 set -uo pipefail
 
-API="https://api.mnemom.ai"
+API="${API:-https://api.mnemom.ai}"
+# The web origins /authorize may send a signed-out browser to, per API host
+# (mirrors ringWebOrigins in mnemom-api src/ring-origins.ts). Any other host,
+# such as the API host itself, serves no sign-in page and 404s.
+case "$API" in
+  https://api.mnemom.ai) WEB_ORIGINS="https://www.mnemom.ai https://us-2.mnemom.ai" ;;
+  https://api-us2.mnemom.ai) WEB_ORIGINS="https://us-2.mnemom.ai https://www.mnemom.ai" ;;
+  https://api-us1.mnemom.ai) WEB_ORIGINS="https://preview.mnemom.ai" ;;
+  *) echo "API must be https://api.mnemom.ai, https://api-us2.mnemom.ai or https://api-us1.mnemom.ai (got $API)"; exit 2 ;;
+esac
 MCP_URL="${MCP_URL:-$API/mcp/directory}"
 # Client redirect URIs registration must accept: ChatGPT's production redirect
 # and the OpenAI platform's (both used in OpenAI's app review), plus one on each
-# allowlisted host Claude.ai, Perplexity and VS Code use. The allowlist matches
-# hosts, so the path only has to look like the client's. The loopback URI
-# covers native clients (VS Code desktop, Gemini CLI; RFC 8252 §7.3).
+# allowlisted host Claude (claude.ai and claude.com), Perplexity and VS Code use. The allowlist matches
+# hosts, so the path only has to look like the client's. The two loopback URIs
+# cover native clients (RFC 8252 §7.3): 127.0.0.1 (VS Code desktop) and
+# localhost (Gemini CLI), which the server checks as separate shapes.
 CHATGPT_REDIRECT="https://chatgpt.com/connector_platform_oauth_redirect"
-CLIENT_REDIRECTS="$CHATGPT_REDIRECT https://platform.openai.com/apps-manage/oauth https://claude.ai/api/mcp/auth_callback https://www.perplexity.ai/rest/connectors/oauth/callback https://vscode.dev/redirect http://127.0.0.1:33418/callback"
+CLIENT_REDIRECTS="$CHATGPT_REDIRECT https://platform.openai.com/apps-manage/oauth https://claude.ai/api/mcp/auth_callback https://claude.com/api/mcp/auth_callback https://www.perplexity.ai/rest/connectors/oauth/callback https://vscode.dev/redirect http://127.0.0.1:33418/callback http://localhost:7777/oauth/callback"
 FAIL=0
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -75,6 +87,10 @@ fi
 # challenge, never a validation error, or it never shows the sign-in prompt.
 probe_write() { # $1 label, $2 arguments JSON
   local hdr="$TMP/h" body="$TMP/b" status www
+  # Empty both files first: curl writes them only once a response arrives, so a
+  # network failure here must not leave the previous call's 401 to be read.
+  : >"$hdr"
+  : >"$body"
   curl -sS -D "$hdr" -o "$body" -X POST "$MCP_URL" \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
@@ -176,19 +192,16 @@ if [ -n "$CLIENT_ID" ] && [ -n "$AUTHZ_ENDPOINT" ]; then
   AUTHZ_HDR=$(curl -sS -D - -o /dev/null "$AUTHZ_ENDPOINT?$Q" | tr -d '\r')
   AUTHZ_STATUS=$(echo "$AUTHZ_HDR" | head -1 | awk '{print $2}')
   AUTHZ_LOC=$(echo "$AUTHZ_HDR" | grep -i '^location:' | sed 's/^[Ll]ocation: *//')
-  LOC_HOST=$(echo "$AUTHZ_LOC" | sed -E 's#^https://([^/?]*).*#\1#')
-  case "$LOC_HOST" in
-    mnemom.ai|*.mnemom.ai) LOC_OK=1 ;;
-    *) LOC_OK=0 ;;
-  esac
-  case "$AUTHZ_LOC" in
-    "https://$LOC_HOST/login?return_to="*) ;;
-    *) LOC_OK=0 ;;
-  esac
+  LOC_OK=0
+  for WEB in $WEB_ORIGINS; do
+    case "$AUTHZ_LOC" in
+      "$WEB/login?return_to="*) LOC_OK=1 ;;
+    esac
+  done
   if [ "$AUTHZ_STATUS" = "302" ] && [ "$LOC_OK" = 1 ]; then
     pass "authorize accepted client, redirect, PKCE and scope and sent the browser to sign-in"
   else
-    fail "authorize returned $AUTHZ_STATUS to '${AUTHZ_LOC:-no Location}' (expected 302 to https://…mnemom.ai/login?return_to=…; a redirect back to the client with ?error= is a failure)"
+    fail "authorize returned $AUTHZ_STATUS to '${AUTHZ_LOC:-no Location}' (expected 302 to <one of: $WEB_ORIGINS>/login?return_to=…; a redirect back to the client with ?error= is a failure)"
   fi
 else
   fail "skipped: no ChatGPT client_id from step 5a"

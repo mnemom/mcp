@@ -23,8 +23,8 @@ your sign-in or OAuth flow". Tracked on MNE-7770
   3. The consent page showed `[email protected]` in place of the account email.
   4. The test cases depended on running order, and the protection-card prompt
      left out fields the server requires.
-  5. `claim_agent` is marked not destructive, yet a re-claim overwrites the
-     agent's organization.
+  5. `claim_agent` is marked not destructive, yet every claim, the first one
+     included, re-files the agent under the claiming organization.
   6. The OpenID configuration names a different issuer (`id-us2`) than the
      authorization server (`api.mnemom.ai`).
 
@@ -48,7 +48,8 @@ Perplexity use:
 - 3457 edits the shared tool catalog, so tool schemas, descriptions and the
   `claim_agent` hint change for every client.
 
-Step 5 below therefore probes both addresses and checks those clients.
+Steps 3 and 5 below therefore probe both addresses, on the preview ring and
+then production, and check those clients.
 
 ## Before resubmitting — in order
 
@@ -60,10 +61,25 @@ Step 5 below therefore probes both addresses and checks those clients.
    3456 merges. Resolve toward 3456's side. In the same rebase, move the
    `claim_agent` entry from `NOT_DESTRUCTIVE_EXCEPTIONS` into `DESTRUCTIVE`
    (3457 makes the tool destructive, and 3456's generator refuses to run
-   until the lists agree). Then rerun the generator so the record matches the
-   merged source.
-3. **Merge and deploy** 3460, 3457 and 3459 in a watchable window. Get an
-   owner decision on cause 6.
+   until the lists agree), and reword it to open "Marked destructive
+   because…" like its new neighbours. Then rerun the generator so the record
+   matches the merged source.
+3. **Merge and deploy** 3460, 3457 and 3459 in a watchable window, preview
+   ring first. Plain `/mcp` changes for every client, so production is not
+   approved until the preview ring (`https://api-us1.mnemom.ai`, sign-in at
+   `https://preview.mnemom.ai`) passes. Pull `/Users/shraddha/mnemom/mcp`
+   first so the local probe is this version:
+   ```
+   API=https://api-us1.mnemom.ai MCP_URL=https://api-us1.mnemom.ai/mcp /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
+   API=https://api-us1.mnemom.ai MCP_URL=https://api-us1.mnemom.ai/mcp/directory /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
+   ```
+   Both must pass every check. Then connect Claude.ai and VS Code to
+   `https://api-us1.mnemom.ai/mcp` and run one read and one write in each.
+   Only then approve production. If production misbehaves after approval,
+   roll back with
+   `gh workflow run rollback.yml --repo mnemom/deploy -f service=api -f environment=production`
+   (production rollback needs Shraddha's explicit go). Get an owner decision
+   on cause 6.
 4. **Regenerate the record against the new address**, on a fresh branch off
    mnemom-api main (the resource check needs 3460's `/mcp/directory`
    metadata in the source):
@@ -71,8 +87,7 @@ Step 5 below therefore probes both addresses and checks those clients.
    node scripts/regenerate-openai-submission.mjs --mcp-url=https://api.mnemom.ai/mcp/directory --require-submittable
    ```
    It must exit 0. Open the result as a PR and merge it.
-5. **Run the live probe** after deploy, for both addresses. Pull
-   `/Users/shraddha/mnemom/mcp` first so the local copy has this version:
+5. **Run the live probe** after the production deploy, for both addresses:
    ```
    /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
    MCP_URL=https://api.mnemom.ai/mcp /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
@@ -82,16 +97,20 @@ Step 5 below therefore probes both addresses and checks those clients.
    - unauthenticated writes return `401` with `WWW-Authenticate`, with both
      empty and well-formed arguments;
    - the resource metadata names exactly that address;
-   - redirect URIs register for ChatGPT, the OpenAI platform, Claude.ai,
-     Perplexity, VS Code (web and loopback);
-   - an unknown redirect host, and a `chatgpt.com.` lookalike, are rejected.
+   - redirect URIs register for ChatGPT, the OpenAI platform, Claude
+     (claude.ai and claude.com), Perplexity, VS Code (web and `127.0.0.1`)
+     and Gemini CLI (`localhost`);
+   - an unknown redirect host, and the lookalike host
+     `chatgpt.com.example.invalid`, are rejected.
      If this check fails, the allowlist
      is off: treat it as a security regression, never as something to relax;
-   - `/authorize` sends the new client to the Mnemom sign-in page, not back
-     to ChatGPT with an error.
+   - `/authorize` sends the new client to that ring's Mnemom sign-in page
+     (`www.mnemom.ai` or `us-2.mnemom.ai` for production), not back to
+     ChatGPT with an error and not to the API host.
 
-   As of 2026-09-30, `MCP_URL=https://api.mnemom.ai/mcp` passes everything
-   except the empty-arguments write, which is the bug 3460 fixes.
+   As of 2026-09-30, plain `/mcp` on both production and the preview ring
+   passes everything except the empty-arguments write, which is the bug 3460
+   fixes.
 
    Then connect Mnemom from Claude.ai, VS Code, Gemini CLI and Perplexity,
    sign in, and run one read and one write in each. The probe cannot click
