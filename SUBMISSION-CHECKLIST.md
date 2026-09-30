@@ -101,7 +101,10 @@ then production, and check those clients.
      run's commit is still `main`'s head** and the freeze is on. Never
      rerun an older run: all mnemom-api deploys share one queue, so a rerun
      would displace the newer run or put an older build on the preview
-     ring. If a run stops at "Approve: Production"
+     ring. If the preview ring settles on an older commit with no run
+     failed or in flight (merges can finish CI out of order), send the
+     `repository_dispatch` shown under Ship for `main`'s head, with the
+     freeze still on. If a run stops at "Approve: Production"
      (it can when the deploy workflow cannot confirm the change is
      migration-free), reject it. The freeze still refuses production and the
      next queued run starts.
@@ -119,7 +122,9 @@ then production, and check those clients.
    - **Ship.** First confirm no mnemom-api deploy run is queued or in
      progress
      (`gh run list --repo mnemom/deploy --workflow deploy.yml --status in_progress`,
-     and again with `--status queued`; check the run titles). An older run
+     and again with `--status queued` and `--status waiting`; mnemom-api
+     runs are titled `Deploy mnemom-api → production — …`. Two stale
+     queued runs from August titled only "deploy"/"Deploy" can be ignored). An older run
      still in flight would deploy its own commit to production the moment
      the freeze clears. Then re-read `X-Mnemom-Deploy-Ref` on the preview
      ring now, not a value noted earlier: that full 40-character sha is the
@@ -148,6 +153,9 @@ then production, and check those clients.
        setting it again is Shraddha's call. A half-finished revision can
        still settle and serve the new build, so read the production
        `X-Mnemom-Deploy-Ref` and decide on the rollback below.
+     - If this run fails before production (for example at
+       `azure / migrate`), production is untouched: rerun its failed jobs
+       or send the dispatch again, after the same `main` check.
      - If this run stops at "Approve: Production", approve it only after
        re-checking that `main`'s head is still the tested commit. Otherwise
        reject it and stop. Production stays on the old build.
