@@ -65,32 +65,49 @@ then production, and check those clients.
    because…" like its new neighbours. Then rerun the generator so the record
    matches the merged source.
 3. **Merge and deploy** 3460, 3457 and 3459 in a watchable window, preview
-   ring first. Plain `/mcp` changes for every client, and mnemom-api deploys
-   go to production automatically once the preview ring's own checks pass
-   (the mnemom/deploy auto-approve path, MNE-3085). Those checks do not sign
-   in from Claude.ai or VS Code, so hold production first:
-   - Before the first merge, set the mnemom/deploy repository variable
-     `REQUIRE_PROD_APPROVAL=true`. Production then waits for the human
-     `approve-production` click. This variable affects every repo's deploys
-     for as long as it is set, so it is Shraddha's call and must be cleared
-     at the end of this step.
-   - Merge the three PRs. Each deploy reaches the preview ring
-     (`https://api-us1.mnemom.ai`, sign-in at `https://preview.mnemom.ai`) and
-     then waits. Pull `/Users/shraddha/mnemom/mcp` so the local probe is this
-     version, then run:
+   ring first. Plain `/mcp` changes for every client, and a mnemom-api merge
+   goes to production automatically once the preview ring's own checks pass
+   (the mnemom/deploy auto-approve path, MNE-3085). Those checks never sign
+   in from Claude.ai or VS Code, so freeze production for the window:
+   - **Freeze.** Before the first merge, set the mnemom/deploy repository
+     variable `AZURE_PROD_CELL_HOLD=true`. The production cell gate reads it
+     before any approval path, auto or human, and refuses to deploy (a
+     "governed refusal", not a failure). It freezes every repo's production
+     cell deploys while it is set, so it is Shraddha's call. Do not use
+     `REQUIRE_PROD_APPROVAL` for this: the gate still auto-approves
+     mnemom-api when a production approval is rejected.
+   - **Merge all three**, 3460 first. Each merge's run deploys the preview
+     ring (`https://api-us1.mnemom.ai`, sign-in at `https://preview.mnemom.ai`)
+     and then stops at the freeze, so the next run starts. Wait until the
+     preview ring serves the commit with all three: the `X-Mnemom-Deploy-Ref`
+     header of `curl -sSI https://api-us1.mnemom.ai/health` must equal
+     mnemom-api `main`'s head.
+   - **Test the preview ring.** Pull `/Users/shraddha/mnemom/mcp` so the
+     local probe is this version, then run:
      ```
      API=https://api-us1.mnemom.ai MCP_URL=https://api-us1.mnemom.ai/mcp /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
      API=https://api-us1.mnemom.ai MCP_URL=https://api-us1.mnemom.ai/mcp/directory /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
      ```
      Both must pass every check. Then connect Claude.ai and VS Code to
      `https://api-us1.mnemom.ai/mcp` and run one read and one write in each.
-   - Only then approve production (the latest waiting run), and clear
-     `REQUIRE_PROD_APPROVAL`.
-   - If production misbehaves, roll the us-2 cell back. Production rollback
-     needs Shraddha's explicit go:
+   - **If anything fails**, leave the freeze on and forward-fix or revert on
+     mnemom-api `main`, then repeat from the deploy-ref check. Production
+     never saw the change.
+   - **Ship.** Check `main`'s head is still the commit you tested (no other
+     merge since). Clear `AZURE_PROD_CELL_HOLD`, then redeploy that commit:
+     ```
+     gh workflow run deploy.yml --repo mnemom/deploy -f repos=mnemom-api -f environment=production
+     ```
+     Watch the run until the us-2 api job succeeds, and confirm the
+     `X-Mnemom-Deploy-Ref` of `https://api.mnemom.ai/health` equals the tested
+     commit.
+   - **Roll back** if production misbehaves. Production rollback needs
+     Shraddha's explicit go:
      ```
      gh workflow run rollback.yml --repo mnemom/deploy -f service=azure-api -f environment=production -f cell=us-2
      ```
+     This rolls back the container only; none of 3460, 3457 or 3459
+     carries a database migration (checked 2026-09-30).
 
    Get an owner decision on cause 6.
 4. **Regenerate the record against the new address**, on a fresh branch off
