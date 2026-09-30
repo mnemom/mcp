@@ -15,8 +15,8 @@ your sign-in or OAuth flow". Tracked on MNE-7770
   the probe below checks that it rejects an unknown host.
 - **Causes found in the 2026-09-30 audit:**
   1. An unauthenticated call to a sign-in tool with empty or partial arguments
-     returned a validation error (HTTP 200) instead of the OAuth challenge. A
-     client that probes with `{}` never saw the sign-in prompt.
+     returned a `not_found` or validation error (HTTP 200) instead of the OAuth
+     challenge. A client that probes with `{}` never saw the sign-in prompt.
   2. The OAuth resource metadata names `https://api.mnemom.ai/mcp`, but the app
      is registered at `https://api.mnemom.ai/mcp?profile=directory`. RFC 9728
      requires them to be identical.
@@ -41,45 +41,64 @@ Shraddha's merge (auth, MCP runtime or security class):
 | 4 (records) | https://github.com/mnemom/mnemom-api/pull/3456 | v2.0.4 submission record, order-independent test cases, `FORM-FILL.md` with a live submit gate |
 | 6 | none yet | needs an owner decision; the form keeps OIDC off, but the `FORM-FILL.md` submit gate blocks until it is resolved |
 
-Plain `/mcp` (Claude.ai, VS Code, Gemini, Perplexity) is unchanged by all of
-these.
+**Plain `/mcp` changes too.** It is the address Claude.ai, VS Code, Gemini and
+Perplexity use:
+- 3460's sign-in challenge applies on every address, so an empty-arguments
+  write on `/mcp` now gets `401` plus the challenge instead of an error.
+- 3457 edits the shared tool catalog, so tool schemas, descriptions and the
+  `claim_agent` hint change for every client.
+
+Step 5 below therefore probes both addresses and checks those clients.
 
 ## Before resubmitting — in order
 
 1. **Merge the records PR**, https://github.com/mnemom/mnemom-api/pull/3456.
    It adds the generator flags used below and `FORM-FILL.md`; neither exists
    on main before it merges.
-2. **Merge and deploy** 3460, 3457 and 3459 in a watchable window. Get an
+2. **Rebase 3457 onto main.** It also edits
+   `submissions/openai/chatgpt-app-submission.json`, so it conflicts once
+   3456 merges. Resolve toward 3456's side. In the same rebase, move the
+   `claim_agent` entry from `NOT_DESTRUCTIVE_EXCEPTIONS` into `DESTRUCTIVE`
+   (3457 makes the tool destructive, and 3456's generator refuses to run
+   until the lists agree). Then rerun the generator so the record matches the
+   merged source.
+3. **Merge and deploy** 3460, 3457 and 3459 in a watchable window. Get an
    owner decision on cause 6.
-3. **Regenerate the record against the new address**, on a fresh branch off
+4. **Regenerate the record against the new address**, on a fresh branch off
    mnemom-api main (the resource check needs 3460's `/mcp/directory`
    metadata in the source):
    ```
    node scripts/regenerate-openai-submission.mjs --mcp-url=https://api.mnemom.ai/mcp/directory --require-submittable
    ```
-   It must exit 0. Before that, move the `claim_agent` entry from
-   `NOT_DESTRUCTIVE_EXCEPTIONS` into `DESTRUCTIVE`; the generator refuses to
-   run until you do. Open the result as a PR and merge it.
-4. **Run the live probe** after deploy, against the address being submitted:
-   `/Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh` (it probes
-   `https://api.mnemom.ai/mcp/directory` by default; set `MCP_URL` to probe
-   another). Every check must pass. It checks that:
+   It must exit 0. Open the result as a PR and merge it.
+5. **Run the live probe** after deploy, for both addresses. Pull
+   `/Users/shraddha/mnemom/mcp` first so the local copy has this version:
+   ```
+   /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
+   MCP_URL=https://api.mnemom.ai/mcp /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
+   ```
+   The first run probes `https://api.mnemom.ai/mcp/directory`, the address
+   being submitted. Every check must pass on both runs. It checks that:
    - unauthenticated writes return `401` with `WWW-Authenticate`, with both
      empty and well-formed arguments;
    - the resource metadata names exactly that address;
-   - ChatGPT's redirect URI registers;
+   - ChatGPT's, the OpenAI platform's and Claude.ai's redirect URIs register;
    - an unknown redirect host is rejected. If this check fails, the allowlist
      is off: treat it as a security regression, never as something to relax;
    - `/authorize` accepts the new client.
 
    As of 2026-09-30, `MCP_URL=https://api.mnemom.ai/mcp` passes everything
    except the empty-arguments write, which is the bug 3460 fixes.
-5. **Work through the submit gate** in mnemom-api
+
+   Then connect Mnemom from Claude.ai, VS Code and Perplexity, sign in, and
+   run one read and one write in each. The probe cannot click the consent
+   page.
+6. **Work through the submit gate** in mnemom-api
    `submissions/openai/FORM-FILL.md`. It checks the live server, the claim
    targets, a real-browser sign-in with the test account (the consent page
    shows the real email) and every test case. Do not submit until every box
    is ticked.
-6. **Fill the form from `FORM-FILL.md`**, field by field. Take the password
+7. **Fill the form from `FORM-FILL.md`**, field by field. Take the password
    from the JSON `test_credentials`; it is never copied into any doc.
 
 ## Reference

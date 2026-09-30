@@ -16,16 +16,21 @@
 # MCP_URL must be the exact MCP server URL entered in the form (the `mcp_url`
 # in mnemom-api's regenerated submissions/openai/chatgpt-app-submission.json).
 #
-# Side effect: step 5 registers one throwaway OAuth client, exactly as any
-# client would (5b is rejected, so it registers nothing). Exits non-zero if
-# any check fails.
+# Run it for BOTH addresses after a deploy: the directory address ChatGPT uses,
+# and plain /mcp, which Claude.ai, VS Code and Perplexity use.
+#
+# Side effect: step 5a registers one throwaway OAuth client per redirect URI,
+# exactly as any client would (5b is rejected, so it registers nothing).
+# Exits non-zero if any check fails.
 
 set -uo pipefail
 
 API="https://api.mnemom.ai"
 MCP_URL="${MCP_URL:-$API/mcp/directory}"
-# ChatGPT's production redirect URI (OpenAI auth docs). Registration must accept it.
+# Client redirect URIs registration must accept: ChatGPT's production redirect
+# and the OpenAI platform's (both used in OpenAI's app review), plus Claude.ai's.
 CHATGPT_REDIRECT="https://chatgpt.com/connector_platform_oauth_redirect"
+CLIENT_REDIRECTS="$CHATGPT_REDIRECT https://platform.openai.com/apps-manage/oauth https://claude.ai/api/mcp/auth_callback"
 FAIL=0
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -56,7 +61,7 @@ READ_BODY=$(curl -sS -X POST "$MCP_URL" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_started","arguments":{}}}')
-if echo "$READ_BODY" | grep -q '"result"'; then
+if echo "$READ_BODY" | grep -q '"result"' && ! echo "$READ_BODY" | grep -q '"isError":true'; then
   pass "anonymous get_started returned a result (reads stay zero-auth)"
 else
   fail "anonymous get_started did not return a result: $(echo "$READ_BODY" | head -c 400)"
@@ -71,7 +76,7 @@ probe_write() { # $1 label, $2 arguments JSON
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
     -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"claim_agent\",\"arguments\":$2}}"
-  status=$(head -1 "$hdr" | awk '{print $2}')
+  status=$(head -1 "$hdr" | tr -d '\r' | awk '{print $2}')
   www=$(grep -i '^www-authenticate:' "$hdr" | tr -d '\r')
   if [ "$status" = "401" ] && echo "$www" | grep -qF "resource_metadata=\"$PRM_URL\""; then
     pass "$1: 401 + WWW-Authenticate pointing at $PRM_URL"
@@ -118,17 +123,20 @@ register() { # $1 redirect_uri -> prints "<body>\n<status>"
     -d "{\"client_name\":\"OpenAI-Reviewer-Probe\",\"redirect_uris\":[\"$1\"],\"grant_types\":[\"authorization_code\",\"refresh_token\"],\"response_types\":[\"code\"],\"token_endpoint_auth_method\":\"none\"}"
 }
 CLIENT_ID=""
-step "5a. Dynamic Client Registration with ChatGPT's redirect URI -> expect 201"
+step "5a. Dynamic Client Registration with each client's redirect URI -> expect 201"
 if [ -n "$REG_ENDPOINT" ]; then
-  DCR_RESP=$(register "$CHATGPT_REDIRECT")
-  DCR_STATUS=$(echo "$DCR_RESP" | tail -1)
-  DCR_BODY=$(echo "$DCR_RESP" | sed '$d')
-  if [ "$DCR_STATUS" = "201" ]; then
-    CLIENT_ID=$(echo "$DCR_BODY" | json_field client_id)
-    pass "registered with zero manual approval (201), client_id=$CLIENT_ID"
-  else
-    fail "registration with $CHATGPT_REDIRECT returned $DCR_STATUS (expected 201). Body: $DCR_BODY"
-  fi
+  for REDIRECT in $CLIENT_REDIRECTS; do
+    DCR_RESP=$(register "$REDIRECT")
+    DCR_STATUS=$(echo "$DCR_RESP" | tail -1)
+    DCR_BODY=$(echo "$DCR_RESP" | sed '$d')
+    if [ "$DCR_STATUS" = "201" ]; then
+      ID=$(echo "$DCR_BODY" | json_field client_id)
+      [ "$REDIRECT" = "$CHATGPT_REDIRECT" ] && CLIENT_ID="$ID"
+      pass "$REDIRECT registered with zero manual approval (201), client_id=$ID"
+    else
+      fail "registration with $REDIRECT returned $DCR_STATUS (expected 201). Body: $DCR_BODY"
+    fi
+  done
 else
   fail "skipped: no registration_endpoint from step 4"
 fi
@@ -155,14 +163,14 @@ step "6. /authorize accepts the registered client + redirect (PKCE S256, pre-log
 if [ -n "$CLIENT_ID" ] && [ -n "$AUTHZ_ENDPOINT" ]; then
   CHALLENGE=$(python3 -c 'import hashlib,base64,secrets;print(base64.urlsafe_b64encode(hashlib.sha256(secrets.token_urlsafe(48).encode()).digest()).rstrip(b"=").decode())')
   Q=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.urlencode({"client_id":sys.argv[1],"redirect_uri":sys.argv[2],"response_type":"code","code_challenge":sys.argv[3],"code_challenge_method":"S256","state":"probe","scope":"mcp:read mcp:write","resource":sys.argv[4]}))' "$CLIENT_ID" "$CHATGPT_REDIRECT" "$CHALLENGE" "$MCP_URL")
-  AUTHZ_STATUS=$(curl -sS -D - -o /dev/null "$AUTHZ_ENDPOINT?$Q" | head -1 | awk '{print $2}')
+  AUTHZ_STATUS=$(curl -sS -D - -o /dev/null "$AUTHZ_ENDPOINT?$Q" | head -1 | tr -d '\r' | awk '{print $2}')
   if [ "$AUTHZ_STATUS" = "302" ]; then
     pass "authorize accepted client + redirect and redirected to sign-in (302)"
   else
     fail "authorize returned $AUTHZ_STATUS (expected 302 to sign-in)"
   fi
 else
-  fail "skipped: no client_id from step 5a"
+  fail "skipped: no ChatGPT client_id from step 5a"
 fi
 
 step "Summary"
