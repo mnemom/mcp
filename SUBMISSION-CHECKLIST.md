@@ -76,13 +76,18 @@ then production, and check those clients.
      "governed refusal", not a failure). It freezes every repo's production
      cell deploys while it is set, so it is Shraddha's call. Do not use
      `REQUIRE_PROD_APPROVAL` for this: the gate still auto-approves
-     mnemom-api when a production approval is rejected.
+     mnemom-api when a production approval is rejected. Other repos'
+     production deploys refused during the freeze are not re-sent when it
+     clears; they go live with that repo's next merge, or a re-dispatch.
    - **Merge all three**, 3460 first. Each merge's run deploys the preview
      ring (`https://api-us1.mnemom.ai`, sign-in at `https://preview.mnemom.ai`)
      and then stops at the freeze, so the next run starts. Wait until the
      preview ring serves the commit with all three: the `X-Mnemom-Deploy-Ref`
      header of `curl -sSI https://api-us1.mnemom.ai/health` must equal
-     mnemom-api `main`'s head. If a run stops at "Approve: Production"
+     mnemom-api `main`'s head. A merge that touches only docs starts no
+     deploy, so if one lands in the window the header stays on the last
+     deploying commit: compare against that commit instead, and send the
+     Ship below with it. If a run stops at "Approve: Production"
      (it can when the deploy workflow cannot confirm the change is
      migration-free), reject it. The freeze still refuses production and the
      next queued run starts.
@@ -99,9 +104,10 @@ then production, and check those clients.
      never saw the change.
    - **Ship.** Note the tested commit: the full 40-character sha that
      `X-Mnemom-Deploy-Ref` showed on the preview ring. Check that mnemom-api
-     `main`'s head is still that commit. A newer merge (for example a
+     `main` has not moved past it, apart from docs-only merges
+     (`git log --stat <sha>..origin/main`). A newer merge (for example a
      migration) would be applied to production on the human-approval path,
-     so if `main` has moved, stop and retest from the deploy-ref check. Clear
+     so if anything else landed, stop and retest from the deploy-ref check. Clear
      `AZURE_PROD_CELL_HOLD`, then send one deploy of exactly that commit:
      ```
      gh api repos/mnemom/deploy/dispatches -f event_type=deploy \
@@ -110,19 +116,24 @@ then production, and check those clients.
        -f 'client_payload[sha]=<tested 40-character sha>'
      ```
      Use this, not `gh workflow run deploy.yml`: a manual run carries no
-     commit, so the production cell gate refuses it (G6) and nothing ships.
+     commit, so the production cell gate refuses it (G6) and the api never
+     reaches production.
      The run redeploys the preview ring first with the same image, which is
      harmless. Watch it until the us-2 api job succeeds, and confirm the
      `X-Mnemom-Deploy-Ref` of `https://api.mnemom.ai/health` equals the
      tested commit.
+     - If the us-2 api job fails, the deploy workflow sets
+       `AZURE_PROD_CELL_HOLD` again and pages. Production stays on the old
+       build. Find the cause and fix it; clearing the freeze again is
+       Shraddha's call.
      - If this run stops at "Approve: Production", approve it only after
-       re-checking that `main`'s head is still the tested commit. Otherwise
+       repeating that check on `main`. Otherwise
        reject it and stop. Production stays on the old build.
      - If the run is refused by the burn-rate brake (or the soak window, if
-       it is on), **do not override it.** Production stays on the old build,
-       which is safe. Find out why the brake tripped, then dispatch again once
-       it clears. The same applies if the brake keeps the preview ring from
-       deploying during the merge phase.
+       it is on), **do not override it.** The run ends red on purpose, but
+       nothing was deployed: production stays on the old build, which is
+       safe. Find out why the brake tripped, then dispatch again once it
+       clears.
    - **Roll back** if production misbehaves. Production rollback needs
      Shraddha's explicit go:
      ```
@@ -158,7 +169,7 @@ then production, and check those clients.
      If this check fails, the allowlist
      is off: treat it as a security regression, never as something to relax;
    - `/authorize` sends the new client to that ring's Mnemom sign-in page
-     (`www.mnemom.ai` for `api.mnemom.ai`), not back to
+     (`www.mnemom.ai` or `us-2.mnemom.ai` for `api.mnemom.ai`), not back to
      ChatGPT with an error and not to the API host.
 
    As of 2026-09-30, plain `/mcp` on both production and the preview ring
