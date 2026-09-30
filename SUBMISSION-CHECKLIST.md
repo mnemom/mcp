@@ -65,21 +65,34 @@ then production, and check those clients.
    because…" like its new neighbours. Then rerun the generator so the record
    matches the merged source.
 3. **Merge and deploy** 3460, 3457 and 3459 in a watchable window, preview
-   ring first. Plain `/mcp` changes for every client, so production is not
-   approved until the preview ring (`https://api-us1.mnemom.ai`, sign-in at
-   `https://preview.mnemom.ai`) passes. Pull `/Users/shraddha/mnemom/mcp`
-   first so the local probe is this version:
-   ```
-   API=https://api-us1.mnemom.ai MCP_URL=https://api-us1.mnemom.ai/mcp /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
-   API=https://api-us1.mnemom.ai MCP_URL=https://api-us1.mnemom.ai/mcp/directory /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
-   ```
-   Both must pass every check. Then connect Claude.ai and VS Code to
-   `https://api-us1.mnemom.ai/mcp` and run one read and one write in each.
-   Only then approve production. If production misbehaves after approval,
-   roll back with
-   `gh workflow run rollback.yml --repo mnemom/deploy -f service=api -f environment=production`
-   (production rollback needs Shraddha's explicit go). Get an owner decision
-   on cause 6.
+   ring first. Plain `/mcp` changes for every client, and mnemom-api deploys
+   go to production automatically once the preview ring's own checks pass
+   (the mnemom/deploy auto-approve path, MNE-3085). Those checks do not sign
+   in from Claude.ai or VS Code, so hold production first:
+   - Before the first merge, set the mnemom/deploy repository variable
+     `REQUIRE_PROD_APPROVAL=true`. Production then waits for the human
+     `approve-production` click. This variable affects every repo's deploys
+     for as long as it is set, so it is Shraddha's call and must be cleared
+     at the end of this step.
+   - Merge the three PRs. Each deploy reaches the preview ring
+     (`https://api-us1.mnemom.ai`, sign-in at `https://preview.mnemom.ai`) and
+     then waits. Pull `/Users/shraddha/mnemom/mcp` so the local probe is this
+     version, then run:
+     ```
+     API=https://api-us1.mnemom.ai MCP_URL=https://api-us1.mnemom.ai/mcp /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
+     API=https://api-us1.mnemom.ai MCP_URL=https://api-us1.mnemom.ai/mcp/directory /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
+     ```
+     Both must pass every check. Then connect Claude.ai and VS Code to
+     `https://api-us1.mnemom.ai/mcp` and run one read and one write in each.
+   - Only then approve production (the latest waiting run), and clear
+     `REQUIRE_PROD_APPROVAL`.
+   - If production misbehaves, roll the us-2 cell back. Production rollback
+     needs Shraddha's explicit go:
+     ```
+     gh workflow run rollback.yml --repo mnemom/deploy -f service=azure-api -f environment=production -f cell=us-2
+     ```
+
+   Get an owner decision on cause 6.
 4. **Regenerate the record against the new address**, on a fresh branch off
    mnemom-api main (the resource check needs 3460's `/mcp/directory`
    metadata in the source):
@@ -105,7 +118,7 @@ then production, and check those clients.
      If this check fails, the allowlist
      is off: treat it as a security regression, never as something to relax;
    - `/authorize` sends the new client to that ring's Mnemom sign-in page
-     (`www.mnemom.ai` or `us-2.mnemom.ai` for production), not back to
+     (`www.mnemom.ai` for `api.mnemom.ai`), not back to
      ChatGPT with an error and not to the API host.
 
    As of 2026-09-30, plain `/mcp` on both production and the preview ring
