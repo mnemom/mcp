@@ -84,18 +84,24 @@ then production, and check those clients.
      freeze rather than by who set this one. So for the window, also set
      `CELL_FREEZE_AUTORECOVER_ENABLED=false` (Shraddha's call, like the
      hold), and check that `AZURE_PROD_CELL_HOLD` is still `true` before
-     each merge. Restore both after the window.
+     each merge. After the window, restore both: the hold back to `false`
+     and `CELL_FREEZE_AUTORECOVER_ENABLED` back to `true` (its value on
+     2026-09-30).
    - **Merge all three**, 3460 first. Each merge's run deploys the preview
      ring (`https://api-us1.mnemom.ai`, sign-in at `https://preview.mnemom.ai`)
      and then stops at the freeze, so the next run starts. Wait until the
      preview ring serves the commit with all three: the `X-Mnemom-Deploy-Ref`
      header of `curl -sSI https://api-us1.mnemom.ai/health` must equal
      mnemom-api `main`'s head (every merge, docs included, starts a
-     deploy). If a run fails at the test rehearsal ring (`azure / migrate`,
-     which has failed intermittently), the preview ring is skipped too:
-     rerun that run's failed jobs with
-     `gh run rerun <run id> --failed --repo mnemom/deploy`, which is safe
-     while the freeze is on. If a run stops at "Approve: Production"
+     deploy once mnemom-api's CI on `main` passes; if that CI fails, no
+     deploy is sent, so fix it first). If a run fails at the test
+     rehearsal ring (`azure / migrate`, which has failed intermittently),
+     the preview ring is skipped too. Rerun it with
+     `gh run rerun <run id> --failed --repo mnemom/deploy` **only if that
+     run's commit is still `main`'s head** and the freeze is on. Never
+     rerun an older run: all mnemom-api deploys share one queue, so a rerun
+     would displace the newer run or put an older build on the preview
+     ring. If a run stops at "Approve: Production"
      (it can when the deploy workflow cannot confirm the change is
      migration-free), reject it. The freeze still refuses production and the
      next queued run starts.
@@ -110,9 +116,15 @@ then production, and check those clients.
    - **If anything fails**, leave the freeze on and forward-fix or revert on
      mnemom-api `main`, then repeat from the deploy-ref check. Production
      never saw the change.
-   - **Ship.** Note the tested commit: the full 40-character sha that
-     `X-Mnemom-Deploy-Ref` showed on the preview ring. Check that mnemom-api
-     `main`'s head is still that commit. A newer merge (for example a
+   - **Ship.** First confirm no mnemom-api deploy run is queued or in
+     progress
+     (`gh run list --repo mnemom/deploy --workflow deploy.yml --status in_progress`,
+     and again with `--status queued`; check the run titles). An older run
+     still in flight would deploy its own commit to production the moment
+     the freeze clears. Then re-read `X-Mnemom-Deploy-Ref` on the preview
+     ring now, not a value noted earlier: that full 40-character sha is the
+     tested commit. Check that mnemom-api `main`'s head is still that
+     commit. A newer merge (for example a
      migration) would be applied to production on the human-approval path,
      so if `main` has moved, stop and retest from the deploy-ref check. Clear
      `AZURE_PROD_CELL_HOLD` (leave automatic recovery off until the ship is
