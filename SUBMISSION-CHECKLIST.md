@@ -79,15 +79,23 @@ then production, and check those clients.
      mnemom-api when a production approval is rejected. Other repos'
      production deploys refused during the freeze are not re-sent when it
      clears; they go live with that repo's next merge, or a re-dispatch.
+     The deploy workflow's automatic freeze recovery (every 15 minutes) can
+     also clear a hold, judged from the note left by the last automatic
+     freeze rather than by who set this one. So for the window, also set
+     `CELL_FREEZE_AUTORECOVER_ENABLED=false` (Shraddha's call, like the
+     hold), and check that `AZURE_PROD_CELL_HOLD` is still `true` before
+     each merge. Restore both after the window.
    - **Merge all three**, 3460 first. Each merge's run deploys the preview
      ring (`https://api-us1.mnemom.ai`, sign-in at `https://preview.mnemom.ai`)
      and then stops at the freeze, so the next run starts. Wait until the
      preview ring serves the commit with all three: the `X-Mnemom-Deploy-Ref`
      header of `curl -sSI https://api-us1.mnemom.ai/health` must equal
-     mnemom-api `main`'s head. A merge that touches only docs starts no
-     deploy, so if one lands in the window the header stays on the last
-     deploying commit: compare against that commit instead, and send the
-     Ship below with it. If a run stops at "Approve: Production"
+     mnemom-api `main`'s head (every merge, docs included, starts a
+     deploy). If a run fails at the test rehearsal ring (`azure / migrate`,
+     which has failed intermittently), the preview ring is skipped too:
+     rerun that run's failed jobs with
+     `gh run rerun <run id> --failed --repo mnemom/deploy`, which is safe
+     while the freeze is on. If a run stops at "Approve: Production"
      (it can when the deploy workflow cannot confirm the change is
      migration-free), reject it. The freeze still refuses production and the
      next queued run starts.
@@ -104,11 +112,11 @@ then production, and check those clients.
      never saw the change.
    - **Ship.** Note the tested commit: the full 40-character sha that
      `X-Mnemom-Deploy-Ref` showed on the preview ring. Check that mnemom-api
-     `main` has not moved past it, apart from docs-only merges
-     (`git log --stat <sha>..origin/main`). A newer merge (for example a
+     `main`'s head is still that commit. A newer merge (for example a
      migration) would be applied to production on the human-approval path,
-     so if anything else landed, stop and retest from the deploy-ref check. Clear
-     `AZURE_PROD_CELL_HOLD`, then send one deploy of exactly that commit:
+     so if `main` has moved, stop and retest from the deploy-ref check. Clear
+     `AZURE_PROD_CELL_HOLD` (leave automatic recovery off until the ship is
+     confirmed), then send one deploy of exactly that commit:
      ```
      gh api repos/mnemom/deploy/dispatches -f event_type=deploy \
        -f 'client_payload[repo]=mnemom-api' \
@@ -122,12 +130,14 @@ then production, and check those clients.
      harmless. Watch it until the us-2 api job succeeds, and confirm the
      `X-Mnemom-Deploy-Ref` of `https://api.mnemom.ai/health` equals the
      tested commit.
-     - If the us-2 api job fails, the deploy workflow sets
-       `AZURE_PROD_CELL_HOLD` again and pages. Production stays on the old
-       build. Find the cause and fix it; clearing the freeze again is
-       Shraddha's call.
+     - If the us-2 api job fails, the run is red. The workflow usually sets
+       `AZURE_PROD_CELL_HOLD` again and pages, but not on a temporary Azure
+       failure or when rollback is unsafe. Check the hold: if it is `false`,
+       setting it again is Shraddha's call. A half-finished revision can
+       still settle and serve the new build, so read the production
+       `X-Mnemom-Deploy-Ref` and decide on the rollback below.
      - If this run stops at "Approve: Production", approve it only after
-       repeating that check on `main`. Otherwise
+       re-checking that `main`'s head is still the tested commit. Otherwise
        reject it and stop. Production stays on the old build.
      - If the run is refused by the burn-rate brake (or the soak window, if
        it is on), **do not override it.** The run ends red on purpose, but
