@@ -1,104 +1,231 @@
-# OpenAI MCP directory — pre-resubmission checklist
+# OpenAI MCP directory — pre-resubmission checklist (v2.0.4)
 
 ## Problem statement
 
-OpenAI rejected the mnemom MCP connector (v2.0.3, 2026-08-29 submission):
-"We're unable to complete your sign-in or OAuth flow. Please ensure valid,
-working credentials are included and that they include no additional setup or
-verification to access your service."
+OpenAI rejected the Mnemom ChatGPT app (v2.0.3) with "We're unable to complete
+your sign-in or OAuth flow". Tracked on MNE-7770
+(https://linear.app/mnemom-dev/issue/MNE-7770).
 
-Root cause (confirmed live against `https://api.mnemom.ai`, 2026-09-26):
-`POST /v1/oauth/register` (RFC 7591 Dynamic Client Registration) rejects any
-`redirect_uri` whose host isn't on a hardcoded allowlist, with
-`400 invalid_redirect_uri` — `"...contact Mnemom to approve your client's
-host."` A generic zero-touch client (exactly how an automated directory
-reviewer is shaped) cannot register, so OAuth can never complete without a
-human on Mnemom's side approving the host first.
+- **Not the cause: client registration.** ChatGPT's own redirect URIs
+  (`chatgpt.com`) always registered successfully.
+  https://github.com/mnemom/mnemom-api/pull/3404 (merged 2026-09-27) reopened
+  registration to any host, and
+  https://github.com/mnemom/mnemom-api/pull/3409 (merged the same day)
+  restored the redirect-host allowlist as a security fix. The allowlist stays;
+  the probe below checks that it rejects an unknown host.
+- **Causes found in the 2026-09-30 audit:**
+  1. An unauthenticated call to a sign-in tool with empty or partial arguments
+     returned a `not_found` or validation error (HTTP 200) instead of the OAuth
+     challenge. A client that probes with `{}` never saw the sign-in prompt.
+  2. The OAuth resource metadata names `https://api.mnemom.ai/mcp`, but the app
+     is registered at `https://api.mnemom.ai/mcp?profile=directory`. RFC 9728
+     requires them to be identical.
+  3. The consent page showed `[email protected]` in place of the account email.
+  4. The test cases depended on running order, and the protection-card prompt
+     left out fields the server requires.
+  5. `claim_agent` is marked not destructive, yet every claim, the first one
+     included, re-files the agent under the claiming organization.
+  6. The OpenID configuration names a different issuer (`id-us2`) than the
+     authorization server (`api.mnemom.ai`).
 
 ## How we are solving it
 
-`mnemom-api` PR (open, NOT merged — NEVER-AUTO security-class change, needs
-Shraddha's review): https://github.com/mnemom/mnemom-api/pull/3404
+Each cause has its own PR in mnemom-api. Every one except the records PR
+(3456) needs Shraddha's merge (auth, MCP runtime or security class):
 
-Reopens registration/authorize to any well-shaped HTTPS or RFC 8252 loopback
-redirect_uri (removes the allowlist gate). PKCE S256 (already mandatory,
-unchanged) is what protects the authorization code from a stolen/misdirected
-redirect — the allowlist survives only as a consent-screen "unrecognized app"
-warning, so the anti-phishing control moves to the human clicking Allow
-instead of blocking registration outright.
+| Cause | PR | What it does |
+|---|---|---|
+| 1, 2, 3 | https://github.com/mnemom/mnemom-api/pull/3460 | challenges unauthenticated sign-in tools before argument handling; serves the directory tools at `/mcp/directory` with its own resource metadata; fixes the consent email |
+| 4 (schema), 5 | https://github.com/mnemom/mnemom-api/pull/3457 | protection-card schema matches the enforced spec; plain tool descriptions; `claim_agent` marked destructive |
+| — | https://github.com/mnemom/mnemom-api/pull/3459 | misfire reports filed by the review test account are closed on arrival, so nobody triages them |
+| 4 (records) | https://github.com/mnemom/mnemom-api/pull/3456 | v2.0.4 submission record, order-independent test cases, `FORM-FILL.md` with a live submit gate |
+| 6 | none yet | needs an owner decision; the form keeps OIDC off, but the `FORM-FILL.md` submit gate blocks until it is resolved |
 
-## Before resubmitting to OpenAI — run these, in order
+**Plain `/mcp` changes too.** It is the address Claude.ai, VS Code, Gemini and
+Perplexity use:
+- 3460's sign-in challenge applies on every address, so an empty-arguments
+  write on `/mcp` now gets `401` plus the challenge instead of an error.
+- 3457 edits the shared tool catalog, so tool schemas, descriptions and the
+  `claim_agent` hint change for every client.
 
-1. **Merge + deploy the fix.**
-   PR: https://github.com/mnemom/mnemom-api/pull/3404 — merge only after
-   Shraddha's review (security/auth class). Deploy in a watchable window.
+Steps 3 and 5 below therefore probe both addresses, on the preview ring and
+then production, and check those clients.
 
-2. **Run the live probe script against prod, immediately after deploy:**
+## Before resubmitting — in order
+
+1. **Merge the records PR**, https://github.com/mnemom/mnemom-api/pull/3456
+   (done: merged 2026-09-30 as 88ff0df).
+   It adds the generator flags used below and `FORM-FILL.md`; neither exists
+   on main before it merges.
+2. **Rebase 3457 onto main.** It also edits
+   `submissions/openai/chatgpt-app-submission.json`, so it conflicts once
+   3456 merges. Resolve toward 3456's side. In the same rebase, move the
+   `claim_agent` entry from `NOT_DESTRUCTIVE_EXCEPTIONS` into `DESTRUCTIVE`
+   (3457 makes the tool destructive, and 3456's generator refuses to run
+   until the lists agree), and reword it to open "Marked destructive
+   because…" like its new neighbours. Then rerun the generator so the record
+   matches the merged source.
+3. **Merge and deploy** 3460, 3457 and 3459 in a watchable window, preview
+   ring first. Plain `/mcp` changes for every client, and a mnemom-api merge
+   goes to production automatically once the preview ring's own checks pass
+   (the mnemom/deploy auto-approve path, MNE-3085). Those checks never sign
+   in from Claude.ai or VS Code, so freeze production for the window:
+   - **Freeze.** Before the first merge, set the mnemom/deploy repository
+     variable `AZURE_PROD_CELL_HOLD=true`. The production cell gate reads it
+     before any approval path, auto or human, and refuses to deploy (a
+     "governed refusal", not a failure). It freezes every repo's production
+     cell deploys while it is set, so it is Shraddha's call. Do not use
+     `REQUIRE_PROD_APPROVAL` for this: the gate still auto-approves
+     mnemom-api when a production approval is rejected. Other repos'
+     production deploys refused during the freeze are not re-sent when it
+     clears; they go live with that repo's next merge, or a re-dispatch.
+     The deploy workflow's automatic freeze recovery (every 15 minutes) can
+     also clear a hold, judged from the note left by the last automatic
+     freeze rather than by who set this one. So for the window, also set
+     `CELL_FREEZE_AUTORECOVER_ENABLED=false` (Shraddha's call, like the
+     hold), and check that `AZURE_PROD_CELL_HOLD` is still `true` before
+     each merge. After the window, restore both: the hold back to `false`
+     and `CELL_FREEZE_AUTORECOVER_ENABLED` back to `true` (its value on
+     2026-09-30).
+   - **Merge all three**, 3460 first. Each merge's run deploys the preview
+     ring (`https://api-us1.mnemom.ai`, sign-in at `https://preview.mnemom.ai`)
+     and then stops at the freeze, so the next run starts. Wait until the
+     preview ring serves the commit with all three: the `X-Mnemom-Deploy-Ref`
+     header of `curl -sSI https://api-us1.mnemom.ai/health` must equal
+     mnemom-api `main`'s head (every merge, docs included, starts a
+     deploy once mnemom-api's CI on `main` passes; if that CI fails, no
+     deploy is sent, so fix it first). If a run fails at the test
+     rehearsal ring (`azure / migrate`, which has failed intermittently),
+     the preview ring is skipped too. Rerun it with
+     `gh run rerun <run id> --failed --repo mnemom/deploy` **only if that
+     run's commit is still `main`'s head** and the freeze is on. Never
+     rerun an older run: all mnemom-api deploys share one queue, so a rerun
+     would displace the newer run or put an older build on the preview
+     ring. If the preview ring settles on an older commit with no run
+     failed or in flight (merges can finish CI out of order), send the
+     `repository_dispatch` shown under Ship for `main`'s head, with the
+     freeze still on. If a run stops at "Approve: Production"
+     (it can when the deploy workflow cannot confirm the change is
+     migration-free), reject it. The freeze still refuses production and the
+     next queued run starts.
+   - **Test the preview ring.** Pull `/Users/shraddha/mnemom/mcp` so the
+     local probe is this version, then run:
+     ```
+     API=https://api-us1.mnemom.ai MCP_URL=https://api-us1.mnemom.ai/mcp /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
+     API=https://api-us1.mnemom.ai MCP_URL=https://api-us1.mnemom.ai/mcp/directory /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
+     ```
+     Both must pass every check. Then connect Claude.ai and VS Code to
+     `https://api-us1.mnemom.ai/mcp` and run one read and one write in each.
+   - **If anything fails**, leave the freeze on and forward-fix or revert on
+     mnemom-api `main`, then repeat from the deploy-ref check. Production
+     never saw the change.
+   - **Ship.** First confirm no mnemom-api deploy run is queued or in
+     progress
+     (`gh run list --repo mnemom/deploy --workflow deploy.yml --status in_progress`,
+     and again with `--status queued` and `--status waiting`; mnemom-api
+     runs are titled `Deploy mnemom-api → production — …`. Two stale
+     queued runs from August titled only "deploy"/"Deploy" can be ignored). An older run
+     still in flight would deploy its own commit to production the moment
+     the freeze clears. Then re-read `X-Mnemom-Deploy-Ref` on the preview
+     ring now, not a value noted earlier: that full 40-character sha is the
+     tested commit. Check that mnemom-api `main`'s head is still that
+     commit. A newer merge (for example a
+     migration) would be applied to production on the human-approval path,
+     so if `main` has moved, stop and retest from the deploy-ref check. Clear
+     `AZURE_PROD_CELL_HOLD` (leave automatic recovery off until the ship is
+     confirmed), then send one deploy of exactly that commit:
+     ```
+     gh api repos/mnemom/deploy/dispatches -f event_type=deploy \
+       -f 'client_payload[repo]=mnemom-api' \
+       -f 'client_payload[environment]=production' \
+       -f 'client_payload[sha]=<tested 40-character sha>'
+     ```
+     Use this, not `gh workflow run deploy.yml`: a manual run carries no
+     commit, so the production cell gate refuses it (G6) and the api never
+     reaches production.
+     The run redeploys the preview ring first with the same image, which is
+     harmless. Watch it until the us-2 api job succeeds, and confirm the
+     `X-Mnemom-Deploy-Ref` of `https://api.mnemom.ai/health` equals the
+     tested commit.
+     - If the us-2 api job fails, the run is red. The workflow usually sets
+       `AZURE_PROD_CELL_HOLD` again and pages, but not on a temporary Azure
+       failure or when rollback is unsafe. Check the hold: if it is `false`,
+       setting it again is Shraddha's call. A half-finished revision can
+       still settle and serve the new build, so read the production
+       `X-Mnemom-Deploy-Ref` and decide on the rollback below.
+     - If this run fails before production (for example at
+       `azure / migrate`), production is untouched: rerun its failed jobs
+       or send the dispatch again, after the same `main` check.
+     - If this run stops at "Approve: Production", approve it only after
+       re-checking that `main`'s head is still the tested commit. Otherwise
+       reject it and stop. Production stays on the old build.
+     - If the run is refused by the burn-rate brake (or the soak window, if
+       it is on), **do not override it.** The run ends red on purpose, but
+       nothing was deployed: production stays on the old build, which is
+       safe. Find out why the brake tripped, then dispatch again once it
+       clears.
+   - **Roll back** if production misbehaves. Production rollback needs
+     Shraddha's explicit go:
+     ```
+     gh workflow run rollback.yml --repo mnemom/deploy -f service=azure-api -f environment=production -f cell=us-2
+     ```
+     This rolls back the api container only (the scheduler, service
+     `azure-api-scheduler`, keeps the new image, harmless for these PRs); none of 3460, 3457 or 3459
+     carries a database migration (checked 2026-09-30).
+
+   Get an owner decision on cause 6.
+4. **Regenerate the record against the new address**, on a fresh branch off
+   mnemom-api main (the resource check needs 3460's `/mcp/directory`
+   metadata in the source):
+   ```
+   node scripts/regenerate-openai-submission.mjs --mcp-url=https://api.mnemom.ai/mcp/directory --require-submittable
+   ```
+   It must exit 0. Open the result as a PR and merge it.
+5. **Run the live probe** after the production deploy, for both addresses:
    ```
    /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
+   MCP_URL=https://api.mnemom.ai/mcp /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
    ```
-   All 6 checks must PASS, especially:
-   - Step 5 (DCR with a never-seen-before redirect host) → must be `201`,
-     not `400 invalid_redirect_uri`. **This is the exact bug** — if this
-     still fails, the fix did not deploy or did not work; do not resubmit.
-   - Step 2 (unauthenticated write) — see "Known secondary finding" below;
-     currently expected to still show a non-401 result even after this fix,
-     since it's a separate code path.
+   The first run probes `https://api.mnemom.ai/mcp/directory`, the address
+   being submitted. Every check must pass on both runs. It checks that:
+   - unauthenticated writes return `401` with `WWW-Authenticate`, with both
+     empty and well-formed arguments;
+   - the resource metadata names exactly that address;
+   - redirect URIs register for ChatGPT, the OpenAI platform, Claude
+     (claude.ai and claude.com), Perplexity, VS Code (web and `127.0.0.1`)
+     and Gemini CLI (`localhost`);
+   - an unknown redirect host, and the lookalike host
+     `chatgpt.com.example.invalid`, are rejected.
+     If this check fails, the allowlist
+     is off: treat it as a security regression, never as something to relax;
+   - `/authorize` sends the new client to that ring's Mnemom sign-in page
+     (`www.mnemom.ai` or `us-2.mnemom.ai` for `api.mnemom.ai`), not back to
+     ChatGPT with an error and not to the API host.
 
-3. **Confirm anonymous reads are unaffected** (probe step 1) — the fix only
-   touches the write/OAuth path; reads must still work with zero auth.
+   As of 2026-09-30, plain `/mcp` on both production and the preview ring
+   passes everything except the empty-arguments write, which is the bug 3460
+   fixes.
 
-4. **Regenerate the OpenAI submission JSON from live metadata** (do not hand-
-   edit it — it must reflect the deployed server exactly):
-   ```
-   cd /Users/shraddha/mnemom/mnemom-api && node scripts/regenerate-openai-submission.mjs
-   ```
-   Confirm the regenerated `submissions/openai/chatgpt-app-submission.json`
-   now has `supported_auth[1].allow_http_redirect: false` (it was stale —
-   showed `true` — as of 2026-09-26, out of sync with live metadata's
-   `false`). A mismatched field here can cause a second, unrelated rejection.
+   Then connect Mnemom from Claude.ai, VS Code, Gemini CLI and Perplexity,
+   sign in, and run one read and one write in each. The probe cannot click
+   the consent page.
 
-5. **Manually walk the full PKCE flow once with a real browser**, using a
-   redirect host that is NOT on the allowlist (e.g. a throwaway
-   `https://webhook.site/...` URL), to see the actual consent screen and
-   confirm:
-   - The "unrecognized app" warning banner renders for the unvetted host.
-   - Clicking Allow still delivers a valid authorization code to that host.
-   - Exchanging the code (+ PKCE verifier) at `/v1/oauth/token` returns a
-     valid access token with zero manual approval step anywhere in the flow.
-
-6. **Confirm the reviewer test credentials still work**, since OpenAI's
-   submission includes login creds for a demo account
-   (`reviewer-directory@mnemom.ai`, see
-   `/Users/shraddha/mnemom/mnemom-api/submissions/openai/README.md`):
-   - Log in as that account and confirm it has a non-empty org with
-     meaningful tool results (reputation, agents, alignment cards) so a
-     reviewer clicking through tools doesn't hit an empty state.
-
-## Known secondary finding — needs its own decision before/alongside resubmission
-
-An unauthenticated write with well-formed arguments (`claim_agent` +
-plausible `hash_proof`) returns HTTP `200` with a JSON-RPC
-`{"isError":true,"result":{...,"error":{"code":"unauthorized",...}}}` body —
-**not** an HTTP-level `401` with `WWW-Authenticate`. Confirmed live
-2026-09-26. This does not look like an authorization bypass (the write is
-still refused), but it means a spec-compliant MCP client relying on the
-documented `401` discovery trigger (per this repo's own README, "Reads:
-zero-auth... Writes: ...an unauthenticated write returns 401 with a
-WWW-Authenticate header") never receives that signal for a `tools/call`
-invocation — only for whatever earlier-layer check currently returns `401`
-(confirmed: hitting `/mcp` with **no** `tools/call` body element at all still
-401s correctly; it's specifically write-tool invocations that get wrapped
-into a 200 JSON-RPC envelope). This is a `mnemom-api` `src/mcp/handler.ts` /
-tool-dispatch question, not something this PR's OAuth-allowlist fix touches —
-flagging for a decision on whether it also needs fixing before resubmission,
-since OpenAI's rejection language ("unable to complete your sign-in or OAuth
-flow") could plausibly also be triggered by this if their reviewer relies on
-in-band 401 discovery rather than a static "this connector needs auth" flag.
+   Also, after deploy: point mnemom-api `scripts/verify-mcp-directory-bar.mjs`
+   at `/mcp/directory`, and close the review-account misfire reports filed
+   before 3459 (starting with `cand-676b1d13`), which 3459 does not touch.
+6. **Work through the submit gate** in mnemom-api
+   `submissions/openai/FORM-FILL.md`. It checks the live server, the claim
+   targets, a real-browser sign-in with the test account (the consent page
+   shows the real email) and every test case. Do not submit until every box
+   is ticked.
+7. **Fill the form from `FORM-FILL.md`**, field by field. Take the password
+   from the JSON `test_credentials`; it is never copied into any doc.
 
 ## Reference
 
-- Fix PR (open, not merged): https://github.com/mnemom/mnemom-api/pull/3404
-- Probe script: `/Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh`
-- OpenAI submission generator: `/Users/shraddha/mnemom/mnemom-api/scripts/regenerate-openai-submission.mjs`
-- OpenAI submission record: `/Users/shraddha/mnemom/mnemom-api/submissions/openai/README.md`
+- Submission record, FORM-FILL and reviewer instructions:
+  https://github.com/mnemom/mnemom-api/tree/main/submissions/openai
+- Generator:
+  https://github.com/mnemom/mnemom-api/blob/main/scripts/regenerate-openai-submission.mjs
+- Probe script: https://github.com/mnemom/mcp/blob/main/scripts/probe-oauth-flow.sh
+  (local: `/Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh`)
