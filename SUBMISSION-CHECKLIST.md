@@ -1,104 +1,72 @@
-# OpenAI MCP directory — pre-resubmission checklist
+# OpenAI MCP directory — pre-resubmission checklist (v2.0.4)
 
 ## Problem statement
 
-OpenAI rejected the mnemom MCP connector (v2.0.3, 2026-08-29 submission):
-"We're unable to complete your sign-in or OAuth flow. Please ensure valid,
-working credentials are included and that they include no additional setup or
-verification to access your service."
+OpenAI rejected the Mnemom ChatGPT app (v2.0.3) with "We're unable to complete
+your sign-in or OAuth flow". Tracked on MNE-7770
+(https://linear.app/mnemom-dev/issue/MNE-7770).
 
-Root cause (confirmed live against `https://api.mnemom.ai`, 2026-09-26):
-`POST /v1/oauth/register` (RFC 7591 Dynamic Client Registration) rejects any
-`redirect_uri` whose host isn't on a hardcoded allowlist, with
-`400 invalid_redirect_uri` — `"...contact Mnemom to approve your client's
-host."` A generic zero-touch client (exactly how an automated directory
-reviewer is shaped) cannot register, so OAuth can never complete without a
-human on Mnemom's side approving the host first.
+- **First cause, fixed:** Dynamic Client Registration only accepted allowlisted
+  redirect hosts, so a zero-touch reviewer client could not register.
+  https://github.com/mnemom/mnemom-api/pull/3404 merged 2026-09-27.
+- **Remaining causes, found in the 2026-09-30 audit:**
+  1. An unauthenticated call to a sign-in tool with empty or partial arguments
+     returned a validation error (HTTP 200) instead of the OAuth challenge. A
+     client that probes with `{}` never saw the sign-in prompt.
+  2. The OAuth resource metadata names `https://api.mnemom.ai/mcp`, but the app
+     is registered at `https://api.mnemom.ai/mcp?profile=directory`. RFC 9728
+     requires them to be identical.
+  3. The consent page showed `[email protected]` in place of the account email.
+  4. The test cases depended on running order, and the protection-card prompt
+     left out fields the server requires.
+  5. `claim_agent` is marked not destructive, yet a re-claim overwrites the
+     agent's organization.
+  6. The OpenID configuration names a different issuer (`id-us2`) than the
+     authorization server (`api.mnemom.ai`).
 
 ## How we are solving it
 
-`mnemom-api` PR (open, NOT merged — NEVER-AUTO security-class change, needs
-Shraddha's review): https://github.com/mnemom/mnemom-api/pull/3404
+Each cause has its own PR in mnemom-api. Every one except the docs PR needs
+Shraddha's merge (auth, MCP runtime or security class):
 
-Reopens registration/authorize to any well-shaped HTTPS or RFC 8252 loopback
-redirect_uri (removes the allowlist gate). PKCE S256 (already mandatory,
-unchanged) is what protects the authorization code from a stolen/misdirected
-redirect — the allowlist survives only as a consent-screen "unrecognized app"
-warning, so the anti-phishing control moves to the human clicking Allow
-instead of blocking registration outright.
+| Cause | PR | What it does |
+|---|---|---|
+| 1, 2, 3 | https://github.com/mnemom/mnemom-api/pull/3460 | challenges unauthenticated sign-in tools before argument handling; serves the directory tools at `/mcp/directory` with its own resource metadata; fixes the consent email |
+| 4 (schema), 5 | https://github.com/mnemom/mnemom-api/pull/3457 | protection-card schema matches the enforced spec; plain tool descriptions; `claim_agent` marked destructive |
+| — | https://github.com/mnemom/mnemom-api/pull/3459 | misfire reports filed by the review test account are closed on arrival, so nobody triages them |
+| 4 (records) | https://github.com/mnemom/mnemom-api/pull/3456 | v2.0.4 submission record, order-independent test cases, `FORM-FILL.md` with a live submit gate |
+| 6 | none yet | needs an owner decision; the form keeps OIDC off either way |
 
-## Before resubmitting to OpenAI — run these, in order
+Plain `/mcp` (Claude.ai, VS Code, Gemini, Perplexity) is unchanged by all of
+these.
 
-1. **Merge + deploy the fix.**
-   PR: https://github.com/mnemom/mnemom-api/pull/3404 — merge only after
-   Shraddha's review (security/auth class). Deploy in a watchable window.
+## Before resubmitting — in order
 
-2. **Run the live probe script against prod, immediately after deploy:**
+1. **Merge and deploy** 3460, 3457 and 3459 in a watchable window. Resolve
+   cause 6.
+2. **Regenerate the record against the new address**, from mnemom-api:
    ```
-   /Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh
+   node scripts/regenerate-openai-submission.mjs --mcp-url=https://api.mnemom.ai/mcp/directory --require-submittable
    ```
-   All 6 checks must PASS, especially:
-   - Step 5 (DCR with a never-seen-before redirect host) → must be `201`,
-     not `400 invalid_redirect_uri`. **This is the exact bug** — if this
-     still fails, the fix did not deploy or did not work; do not resubmit.
-   - Step 2 (unauthenticated write) — see "Known secondary finding" below;
-     currently expected to still show a non-401 result even after this fix,
-     since it's a separate code path.
-
-3. **Confirm anonymous reads are unaffected** (probe step 1) — the fix only
-   touches the write/OAuth path; reads must still work with zero auth.
-
-4. **Regenerate the OpenAI submission JSON from live metadata** (do not hand-
-   edit it — it must reflect the deployed server exactly):
-   ```
-   cd /Users/shraddha/mnemom/mnemom-api && node scripts/regenerate-openai-submission.mjs
-   ```
-   Confirm the regenerated `submissions/openai/chatgpt-app-submission.json`
-   now has `supported_auth[1].allow_http_redirect: false` (it was stale —
-   showed `true` — as of 2026-09-26, out of sync with live metadata's
-   `false`). A mismatched field here can cause a second, unrelated rejection.
-
-5. **Manually walk the full PKCE flow once with a real browser**, using a
-   redirect host that is NOT on the allowlist (e.g. a throwaway
-   `https://webhook.site/...` URL), to see the actual consent screen and
-   confirm:
-   - The "unrecognized app" warning banner renders for the unvetted host.
-   - Clicking Allow still delivers a valid authorization code to that host.
-   - Exchanging the code (+ PKCE verifier) at `/v1/oauth/token` returns a
-     valid access token with zero manual approval step anywhere in the flow.
-
-6. **Confirm the reviewer test credentials still work**, since OpenAI's
-   submission includes login creds for a demo account
-   (`reviewer-directory@mnemom.ai`, see
-   `/Users/shraddha/mnemom/mnemom-api/submissions/openai/README.md`):
-   - Log in as that account and confirm it has a non-empty org with
-     meaningful tool results (reputation, agents, alignment cards) so a
-     reviewer clicking through tools doesn't hit an empty state.
-
-## Known secondary finding — needs its own decision before/alongside resubmission
-
-An unauthenticated write with well-formed arguments (`claim_agent` +
-plausible `hash_proof`) returns HTTP `200` with a JSON-RPC
-`{"isError":true,"result":{...,"error":{"code":"unauthorized",...}}}` body —
-**not** an HTTP-level `401` with `WWW-Authenticate`. Confirmed live
-2026-09-26. This does not look like an authorization bypass (the write is
-still refused), but it means a spec-compliant MCP client relying on the
-documented `401` discovery trigger (per this repo's own README, "Reads:
-zero-auth... Writes: ...an unauthenticated write returns 401 with a
-WWW-Authenticate header") never receives that signal for a `tools/call`
-invocation — only for whatever earlier-layer check currently returns `401`
-(confirmed: hitting `/mcp` with **no** `tools/call` body element at all still
-401s correctly; it's specifically write-tool invocations that get wrapped
-into a 200 JSON-RPC envelope). This is a `mnemom-api` `src/mcp/handler.ts` /
-tool-dispatch question, not something this PR's OAuth-allowlist fix touches —
-flagging for a decision on whether it also needs fixing before resubmission,
-since OpenAI's rejection language ("unable to complete your sign-in or OAuth
-flow") could plausibly also be triggered by this if their reviewer relies on
-in-band 401 discovery rather than a static "this connector needs auth" flag.
+   It must exit 0. Before that, move the `claim_agent` entry from
+   `NOT_DESTRUCTIVE_EXCEPTIONS` into `DESTRUCTIVE`; the generator says so if
+   you forget. Open the regenerated record as a PR.
+3. **Run the live probe** right after deploy:
+   `/Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh`. All 6 checks
+   must pass. Step 2, the unauthenticated write, must now return `401` with
+   `WWW-Authenticate`. The probe checks the `/mcp` metadata, so also confirm
+   `https://api.mnemom.ai/.well-known/oauth-protected-resource/mcp/directory`
+   returns `"resource": "https://api.mnemom.ai/mcp/directory"`.
+4. **Work through the submit gate** in mnemom-api
+   `submissions/openai/FORM-FILL.md`. It checks the live server, the claim
+   targets, a real-browser sign-in with the test account (the consent page
+   shows the real email) and every test case. Do not submit until every box
+   is ticked.
+5. **Fill the form from `FORM-FILL.md`**, field by field. Take the password
+   from the JSON `test_credentials`; it is never copied into any doc.
 
 ## Reference
 
-- Fix PR (open, not merged): https://github.com/mnemom/mnemom-api/pull/3404
+- Submission record and generator: mnemom-api `submissions/openai/` and
+  `scripts/regenerate-openai-submission.mjs`
 - Probe script: `/Users/shraddha/mnemom/mcp/scripts/probe-oauth-flow.sh`
-- OpenAI submission generator: `/Users/shraddha/mnemom/mnemom-api/scripts/regenerate-openai-submission.mjs`
-- OpenAI submission record: `/Users/shraddha/mnemom/mnemom-api/submissions/openai/README.md`
