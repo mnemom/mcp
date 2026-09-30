@@ -17,7 +17,7 @@
 # in mnemom-api's regenerated submissions/openai/chatgpt-app-submission.json).
 #
 # Run it for BOTH addresses after a deploy: the directory address ChatGPT uses,
-# and plain /mcp, which Claude.ai, VS Code and Perplexity use.
+# and plain /mcp, which Claude.ai, VS Code, Gemini and Perplexity use.
 #
 # Side effect: step 5a registers one throwaway OAuth client per redirect URI,
 # exactly as any client would (5b is rejected, so it registers nothing).
@@ -28,9 +28,12 @@ set -uo pipefail
 API="https://api.mnemom.ai"
 MCP_URL="${MCP_URL:-$API/mcp/directory}"
 # Client redirect URIs registration must accept: ChatGPT's production redirect
-# and the OpenAI platform's (both used in OpenAI's app review), plus Claude.ai's.
+# and the OpenAI platform's (both used in OpenAI's app review), plus one on each
+# allowlisted host Claude.ai, Perplexity and VS Code use. The allowlist matches
+# hosts, so the path only has to look like the client's. The loopback URI
+# covers native clients (VS Code desktop, Gemini CLI; RFC 8252 §7.3).
 CHATGPT_REDIRECT="https://chatgpt.com/connector_platform_oauth_redirect"
-CLIENT_REDIRECTS="$CHATGPT_REDIRECT https://platform.openai.com/apps-manage/oauth https://claude.ai/api/mcp/auth_callback"
+CLIENT_REDIRECTS="$CHATGPT_REDIRECT https://platform.openai.com/apps-manage/oauth https://claude.ai/api/mcp/auth_callback https://www.perplexity.ai/rest/connectors/oauth/callback https://vscode.dev/redirect http://127.0.0.1:33418/callback"
 FAIL=0
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -40,7 +43,7 @@ case "$MCP_URL" in
   *) echo "MCP_URL must be on $API (got $MCP_URL)"; exit 2 ;;
 esac
 case "$MCP_URL" in
-  *\?*|*\#*) echo "MCP_URL must not carry a query or fragment: a resource identifier cannot (RFC 8707 §2)"; exit 2 ;;
+  *\?*|*\#*) echo "MCP_URL must not carry a query or fragment: RFC 8707 §2 forbids a fragment and advises against a query, and RFC 9728 §3.3 needs an exact match"; exit 2 ;;
 esac
 MCP_PATH="${MCP_URL#"$API"}"
 PRM_URL="$API/.well-known/oauth-protected-resource$MCP_PATH"
@@ -143,31 +146,49 @@ fi
 
 step "5b. Dynamic Client Registration with an unknown host -> expect 400 invalid_redirect_uri"
 if [ -n "$REG_ENDPOINT" ]; then
-  UNK_RESP=$(register "https://probe-$(date +%s).example.invalid/oauth/callback")
-  UNK_STATUS=$(echo "$UNK_RESP" | tail -1)
-  UNK_BODY=$(echo "$UNK_RESP" | sed '$d')
-  if [ "$UNK_STATUS" = "400" ] && echo "$UNK_BODY" | grep -q 'invalid_redirect_uri'; then
-    pass "unknown redirect host rejected (400 invalid_redirect_uri): allowlist in force"
-  else
-    fail "unknown redirect host returned $UNK_STATUS (expected 400 invalid_redirect_uri; the allowlist is a security control). Body: $UNK_BODY"
-  fi
+  # A plain unknown host, and a lookalike that only a suffix match would pass.
+  for BAD in "https://probe-$(date +%s).example.invalid/oauth/callback" "https://chatgpt.com.example.invalid/connector_platform_oauth_redirect"; do
+    UNK_RESP=$(register "$BAD")
+    UNK_STATUS=$(echo "$UNK_RESP" | tail -1)
+    UNK_BODY=$(echo "$UNK_RESP" | sed '$d')
+    if [ "$UNK_STATUS" = "400" ] && echo "$UNK_BODY" | grep -q 'invalid_redirect_uri'; then
+      pass "$BAD rejected (400 invalid_redirect_uri): allowlist in force"
+    else
+      fail "$BAD returned $UNK_STATUS (expected 400 invalid_redirect_uri; the allowlist is a security control). Body: $UNK_BODY"
+    fi
+  done
 else
   fail "skipped: no registration_endpoint from step 4"
 fi
 
 # ── 6. /authorize accepts the registered client (PKCE shape, pre-login) ─────
 # A real token needs a signed-in human to click Allow, which curl cannot do.
-# This confirms /authorize accepts ChatGPT's client + redirect + resource and
-# redirects to sign-in (302), rather than failing with invalid_redirect_uri.
-step "6. /authorize accepts the registered client + redirect (PKCE S256, pre-login)"
+# This confirms /authorize accepts ChatGPT's client, redirect, PKCE and scope
+# and sends the browser to Mnemom sign-in. Once the client and redirect check
+# out, /authorize reports any other error as a 302 back to the client's
+# redirect with ?error=, so a bare 302 proves nothing: the Location must be
+# the sign-in page. `resource` is sent the way ChatGPT sends it; /authorize
+# does not read it today, so this step does not check it.
+step "6. /authorize sends the registered client to sign-in (PKCE S256, pre-login)"
 if [ -n "$CLIENT_ID" ] && [ -n "$AUTHZ_ENDPOINT" ]; then
   CHALLENGE=$(python3 -c 'import hashlib,base64,secrets;print(base64.urlsafe_b64encode(hashlib.sha256(secrets.token_urlsafe(48).encode()).digest()).rstrip(b"=").decode())')
   Q=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.urlencode({"client_id":sys.argv[1],"redirect_uri":sys.argv[2],"response_type":"code","code_challenge":sys.argv[3],"code_challenge_method":"S256","state":"probe","scope":"mcp:read mcp:write","resource":sys.argv[4]}))' "$CLIENT_ID" "$CHATGPT_REDIRECT" "$CHALLENGE" "$MCP_URL")
-  AUTHZ_STATUS=$(curl -sS -D - -o /dev/null "$AUTHZ_ENDPOINT?$Q" | head -1 | tr -d '\r' | awk '{print $2}')
-  if [ "$AUTHZ_STATUS" = "302" ]; then
-    pass "authorize accepted client + redirect and redirected to sign-in (302)"
+  AUTHZ_HDR=$(curl -sS -D - -o /dev/null "$AUTHZ_ENDPOINT?$Q" | tr -d '\r')
+  AUTHZ_STATUS=$(echo "$AUTHZ_HDR" | head -1 | awk '{print $2}')
+  AUTHZ_LOC=$(echo "$AUTHZ_HDR" | grep -i '^location:' | sed 's/^[Ll]ocation: *//')
+  LOC_HOST=$(echo "$AUTHZ_LOC" | sed -E 's#^https://([^/?]*).*#\1#')
+  case "$LOC_HOST" in
+    mnemom.ai|*.mnemom.ai) LOC_OK=1 ;;
+    *) LOC_OK=0 ;;
+  esac
+  case "$AUTHZ_LOC" in
+    "https://$LOC_HOST/login?return_to="*) ;;
+    *) LOC_OK=0 ;;
+  esac
+  if [ "$AUTHZ_STATUS" = "302" ] && [ "$LOC_OK" = 1 ]; then
+    pass "authorize accepted client, redirect, PKCE and scope and sent the browser to sign-in"
   else
-    fail "authorize returned $AUTHZ_STATUS (expected 302 to sign-in)"
+    fail "authorize returned $AUTHZ_STATUS to '${AUTHZ_LOC:-no Location}' (expected 302 to https://…mnemom.ai/login?return_to=…; a redirect back to the client with ?error= is a failure)"
   fi
 else
   fail "skipped: no ChatGPT client_id from step 5a"

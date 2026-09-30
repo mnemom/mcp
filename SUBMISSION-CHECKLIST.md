@@ -30,8 +30,8 @@ your sign-in or OAuth flow". Tracked on MNE-7770
 
 ## How we are solving it
 
-Each cause has its own PR in mnemom-api. Every one except the docs PR needs
-Shraddha's merge (auth, MCP runtime or security class):
+Each cause has its own PR in mnemom-api. Every one except the records PR
+(3456) needs Shraddha's merge (auth, MCP runtime or security class):
 
 | Cause | PR | What it does |
 |---|---|---|
@@ -82,17 +82,24 @@ Step 5 below therefore probes both addresses and checks those clients.
    - unauthenticated writes return `401` with `WWW-Authenticate`, with both
      empty and well-formed arguments;
    - the resource metadata names exactly that address;
-   - ChatGPT's, the OpenAI platform's and Claude.ai's redirect URIs register;
-   - an unknown redirect host is rejected. If this check fails, the allowlist
+   - redirect URIs register for ChatGPT, the OpenAI platform, Claude.ai,
+     Perplexity, VS Code (web and loopback);
+   - an unknown redirect host, and a `chatgpt.com.` lookalike, are rejected.
+     If this check fails, the allowlist
      is off: treat it as a security regression, never as something to relax;
-   - `/authorize` accepts the new client.
+   - `/authorize` sends the new client to the Mnemom sign-in page, not back
+     to ChatGPT with an error.
 
    As of 2026-09-30, `MCP_URL=https://api.mnemom.ai/mcp` passes everything
    except the empty-arguments write, which is the bug 3460 fixes.
 
-   Then connect Mnemom from Claude.ai, VS Code and Perplexity, sign in, and
-   run one read and one write in each. The probe cannot click the consent
-   page.
+   Then connect Mnemom from Claude.ai, VS Code, Gemini CLI and Perplexity,
+   sign in, and run one read and one write in each. The probe cannot click
+   the consent page.
+
+   Also, after deploy: point mnemom-api `scripts/verify-mcp-directory-bar.mjs`
+   at `/mcp/directory`, and close the review-account misfire reports filed
+   before 3459 (starting with `cand-676b1d13`), which 3459 does not touch.
 6. **Work through the submit gate** in mnemom-api
    `submissions/openai/FORM-FILL.md`. It checks the live server, the claim
    targets, a real-browser sign-in with the test account (the consent page
