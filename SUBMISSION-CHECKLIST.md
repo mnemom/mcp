@@ -53,7 +53,8 @@ then production, and check those clients.
 
 ## Before resubmitting — in order
 
-1. **Merge the records PR**, https://github.com/mnemom/mnemom-api/pull/3456.
+1. **Merge the records PR**, https://github.com/mnemom/mnemom-api/pull/3456
+   (done: merged 2026-09-30 as 88ff0df).
    It adds the generator flags used below and `FORM-FILL.md`; neither exists
    on main before it merges.
 2. **Rebase 3457 onto main.** It also edits
@@ -97,7 +98,10 @@ then production, and check those clients.
      mnemom-api `main`, then repeat from the deploy-ref check. Production
      never saw the change.
    - **Ship.** Note the tested commit: the full 40-character sha that
-     `X-Mnemom-Deploy-Ref` showed on the preview ring. Clear
+     `X-Mnemom-Deploy-Ref` showed on the preview ring. Check that mnemom-api
+     `main`'s head is still that commit. A newer merge (for example a
+     migration) would be applied to production on the human-approval path,
+     so if `main` has moved, stop and retest from the deploy-ref check. Clear
      `AZURE_PROD_CELL_HOLD`, then send one deploy of exactly that commit:
      ```
      gh api repos/mnemom/deploy/dispatches -f event_type=deploy \
@@ -107,18 +111,25 @@ then production, and check those clients.
      ```
      Use this, not `gh workflow run deploy.yml`: a manual run carries no
      commit, so the production cell gate refuses it (G6) and nothing ships.
-     The production cell image is pinned to the sha in the payload, so a merge
-     after testing cannot slip in. The run redeploys the preview ring first
-     with the same image, which is harmless. Watch it until the us-2 api job
-     succeeds, and confirm the `X-Mnemom-Deploy-Ref` of
-     `https://api.mnemom.ai/health` equals the tested commit.
+     The run redeploys the preview ring first with the same image, which is
+     harmless. Watch it until the us-2 api job succeeds, and confirm the
+     `X-Mnemom-Deploy-Ref` of `https://api.mnemom.ai/health` equals the
+     tested commit.
+     - If this run stops at "Approve: Production", approve it only after
+       re-checking that `main`'s head is still the tested commit. Otherwise
+       reject it and stop. Production stays on the old build.
+     - If the run is refused by the burn-rate brake (or the soak window, if
+       it is on), **do not override it.** Production stays on the old build,
+       which is safe. Find out why the brake tripped, then dispatch again once
+       it clears. The same applies if the brake keeps the preview ring from
+       deploying during the merge phase.
    - **Roll back** if production misbehaves. Production rollback needs
      Shraddha's explicit go:
      ```
      gh workflow run rollback.yml --repo mnemom/deploy -f service=azure-api -f environment=production -f cell=us-2
      ```
-     This rolls back the api container only (the scheduler keeps the new
-     image, harmless for these PRs); none of 3460, 3457 or 3459
+     This rolls back the api container only (the scheduler, service
+     `azure-api-scheduler`, keeps the new image, harmless for these PRs); none of 3460, 3457 or 3459
      carries a database migration (checked 2026-09-30).
 
    Get an owner decision on cause 6.
